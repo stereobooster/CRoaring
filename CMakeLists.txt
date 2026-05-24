@@ -110,6 +110,8 @@ configure_file ("${CMAKE_CURRENT_SOURCE_DIR}/tests/config.h.in"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/config.h")
 #################################
 
+find_program(BASH bash)
+
 add_subdirectory(src)
 if(ENABLE_ROARING_TESTS AND NOT EMSCRIPTEN)
   if(CMAKE_SIZEOF_VOID_P EQUAL 8) # we only include the benchmarks on 64-bit systems.
@@ -117,7 +119,6 @@ if(ENABLE_ROARING_TESTS AND NOT EMSCRIPTEN)
   endif()
   add_subdirectory(tests)
 endif()
-find_program(BASH bash)
 
 if(ENABLE_ROARING_TESTS AND BASH AND NOT EMSCRIPTEN)
   message(STATUS "Amalgamation tests enabled")

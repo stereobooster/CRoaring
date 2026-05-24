@@ -329,4 +329,12 @@ __pycache__/
 /roaring.h
 /roaring.hh
 
+# CodeQL (tools/run_codeql_cpp_docker.sh)
+/_codeql_results.sarif
+/_codeql_db_linux/
+/_codeql_linux_bundle/
+/_codeql_bundle_linux64.tgz
+/build-codeql-docker/
+/build-codeql-ci-smoke/
+
 #############END VISUAL STUDIO##############

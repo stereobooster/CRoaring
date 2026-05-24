@@ -61,6 +61,9 @@ get_directory_property(parent_dir PARENT_DIRECTORY)
 configure_file("${parent_dir}/tools/cmake/CTestCustom.cmake" "${CMAKE_BINARY_DIR}")
 
 
+# Parent CMakeLists resolves BASH (find_program) before add_subdirectory(tests).
+set(BASH_EXECUTABLE "${BASH}")
+
 # The amalgamate_demo and amalgamate_demo_cpp do not catch errors from our
 # quick start instructions.
 
