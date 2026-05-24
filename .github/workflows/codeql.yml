@@ -2,9 +2,15 @@ name: "CodeQL"
 
 on:
   push:
-    branches: [ "master" ]
+    branches:
+      - master
+      # Fork experimentation: uploads SARIF scoped to your fork Security → Code scanning.
+      # Remove this line before proposing this workflow upstream if maintainers dislike it.
+      - experimental-codeql-fork
   pull_request:
     branches: [ "master" ]
+  # Run manually from the fork Actions tab → CodeQL workflow → Run workflow → pick branch.
+  workflow_dispatch:
   schedule:
     - cron: "39 2 * * 6"
 
