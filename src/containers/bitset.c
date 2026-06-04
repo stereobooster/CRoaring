@@ -284,6 +284,35 @@ int bitset_container_compute_cardinality(const bitset_container_t *bitset) {
         }
 }
 
+#elif defined(CROARING_WASM_SIMD)
+/* Bitset cardinality: v128-wide loads chunk memory, then two roaring_hamming
+ * (i64 popcnt) calls per lane. We avoid wasm_i8x16_popcnt + byte-lane tally:
+ * Wasm engines commonly lower native-width popcnt to one fast instruction while
+ * byte-vector horizontal sums can be poorer. Naming / PR “SIMD” here means
+ * -msimd128 builtins for loads and lane extract, not SIMD popcount kernels. */
+
+/** Two packed u64 words from one v128; popcounts match roaring_hamming. */
+static inline int32_t croaring_wasm_popcount_packed_u64_pair(v128_t v) {
+    uint64_t a = wasm_u64x2_extract_lane(v, 0);
+    uint64_t b = wasm_u64x2_extract_lane(v, 1);
+    return roaring_hamming(a) + roaring_hamming(b);
+}
+int bitset_container_compute_cardinality(const bitset_container_t *bitset) {
+    const uint64_t *words = bitset->words;
+    int32_t sum = 0;
+    for (int i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {
+        sum += croaring_wasm_popcount_packed_u64_pair(
+            wasm_v128_load((const void *)&words[i + 0]));
+        sum += croaring_wasm_popcount_packed_u64_pair(
+            wasm_v128_load((const void *)&words[i + 2]));
+        sum += croaring_wasm_popcount_packed_u64_pair(
+            wasm_v128_load((const void *)&words[i + 4]));
+        sum += croaring_wasm_popcount_packed_u64_pair(
+            wasm_v128_load((const void *)&words[i + 6]));
+    }
+    return sum;
+}
+
 #elif defined(CROARING_USENEON)
 int bitset_container_compute_cardinality(const bitset_container_t *bitset) {
     uint16x8_t n0 = vdupq_n_u16(0);
@@ -778,6 +807,112 @@ SCALAR_BITSET_CONTAINER_FN(andnot, &~, _mm256_andnot_si256, vbicq_u64)
 
 #endif //  CROARING_COMPILER_SUPPORTS_AVX512
 
+#elif defined(CROARING_WASM_SIMD)
+
+/** Sum of bit counts in two u64 lanes of v (roaring_hamming per lane). */
+static inline int32_t croaring_wasm_v128_carrying_popcnt_pair(v128_t v) {
+    uint64_t a = wasm_u64x2_extract_lane(v, 0);
+    uint64_t b = wasm_u64x2_extract_lane(v, 1);
+    return roaring_hamming(a) + roaring_hamming(b);
+}
+
+static inline void croaring_wasm_v128_store_two_u64(uint64_t *p, v128_t v) {
+    wasm_v128_store((void *)p, v);
+}
+
+#define CROARING_WASM_COMBINE_or(a, b) wasm_v128_or((a), (b))
+#define CROARING_WASM_COMBINE_union(a, b) wasm_v128_or((a), (b))
+#define CROARING_WASM_COMBINE_and(a, b) wasm_v128_and((a), (b))
+#define CROARING_WASM_COMBINE_intersection(a, b) wasm_v128_and((a), (b))
+#define CROARING_WASM_COMBINE_xor(a, b) wasm_v128_xor((a), (b))
+#define CROARING_WASM_COMBINE_andnot(a, b) wasm_v128_andnot((a), (b))
+
+#define CROARING_BITSET_CONTAINER_FN(opname, opsymbol, avx_intrinsic, neon_intrinsic)  \
+int bitset_container_##opname(const bitset_container_t *src_1,            \
+                              const bitset_container_t *src_2,            \
+                              bitset_container_t *dst) {                  \
+    const uint64_t * __restrict__ words_1 = src_1->words;                 \
+    const uint64_t * __restrict__ words_2 = src_2->words;                 \
+    uint64_t *__restrict__ out = dst->words;                              \
+    int32_t sum = 0;                                                      \
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {      \
+        v128_t ax0 = wasm_v128_load((const void *)(words_1 + i));         \
+        v128_t bx0 = wasm_v128_load((const void *)(words_2 + i));         \
+        v128_t c0 = CROARING_WASM_COMBINE_##opname(ax0, bx0);             \
+        croaring_wasm_v128_store_two_u64(out + i, c0);                     \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(c0);               \
+        v128_t ax2 = wasm_v128_load((const void *)(words_1 + i + 2));     \
+        v128_t bx2 = wasm_v128_load((const void *)(words_2 + i + 2));     \
+        v128_t c2 = CROARING_WASM_COMBINE_##opname(ax2, bx2);             \
+        croaring_wasm_v128_store_two_u64(out + i + 2, c2);                 \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(c2);               \
+        v128_t ax4 = wasm_v128_load((const void *)(words_1 + i + 4));     \
+        v128_t bx4 = wasm_v128_load((const void *)(words_2 + i + 4));     \
+        v128_t c4 = CROARING_WASM_COMBINE_##opname(ax4, bx4);             \
+        croaring_wasm_v128_store_two_u64(out + i + 4, c4);                \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(c4);               \
+        v128_t ax6 = wasm_v128_load((const void *)(words_1 + i + 6));     \
+        v128_t bx6 = wasm_v128_load((const void *)(words_2 + i + 6));     \
+        v128_t c6 = CROARING_WASM_COMBINE_##opname(ax6, bx6);             \
+        croaring_wasm_v128_store_two_u64(out + i + 6, c6);                \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(c6);               \
+    }                                                                     \
+    dst->cardinality = sum;                                               \
+    return dst->cardinality;                                              \
+}                                                                         \
+int bitset_container_##opname##_nocard(const bitset_container_t *src_1,   \
+                                       const bitset_container_t *src_2,   \
+                                       bitset_container_t *dst) {         \
+    const uint64_t * __restrict__ words_1 = src_1->words;                \
+    const uint64_t * __restrict__ words_2 = src_2->words;                 \
+    uint64_t *__restrict__ out = dst->words;                              \
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {      \
+        v128_t ax0 = wasm_v128_load((const void *)(words_1 + i));         \
+        v128_t bx0 = wasm_v128_load((const void *)(words_2 + i));         \
+        croaring_wasm_v128_store_two_u64(                                   \
+            out + i, CROARING_WASM_COMBINE_##opname(ax0, bx0));            \
+        v128_t ax2 = wasm_v128_load((const void *)(words_1 + i + 2));      \
+        v128_t bx2 = wasm_v128_load((const void *)(words_2 + i + 2));      \
+        croaring_wasm_v128_store_two_u64(                                   \
+            out + i + 2, CROARING_WASM_COMBINE_##opname(ax2, bx2));        \
+        v128_t ax4 = wasm_v128_load((const void *)(words_1 + i + 4));      \
+        v128_t bx4 = wasm_v128_load((const void *)(words_2 + i + 4));      \
+        croaring_wasm_v128_store_two_u64(                                   \
+            out + i + 4, CROARING_WASM_COMBINE_##opname(ax4, bx4));        \
+        v128_t ax6 = wasm_v128_load((const void *)(words_1 + i + 6));      \
+        v128_t bx6 = wasm_v128_load((const void *)(words_2 + i + 6));      \
+        croaring_wasm_v128_store_two_u64(                                   \
+            out + i + 6, CROARING_WASM_COMBINE_##opname(ax6, bx6));        \
+    }                                                                     \
+    dst->cardinality = BITSET_UNKNOWN_CARDINALITY;                        \
+    return dst->cardinality;                                              \
+}                                                                         \
+int bitset_container_##opname##_justcard(const bitset_container_t *src_1, \
+                              const bitset_container_t *src_2) {          \
+    const uint64_t *__restrict__ words_1 = src_1->words;                    \
+    const uint64_t *__restrict__ words_2 = src_2->words;                    \
+    int32_t sum = 0;                                                       \
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {       \
+        v128_t ax0 = wasm_v128_load((const void *)(words_1 + i));          \
+        v128_t bx0 = wasm_v128_load((const void *)(words_2 + i));          \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(                       \
+            CROARING_WASM_COMBINE_##opname(ax0, bx0));                     \
+        v128_t ax2 = wasm_v128_load((const void *)(words_1 + i + 2));       \
+        v128_t bx2 = wasm_v128_load((const void *)(words_2 + i + 2));       \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(                       \
+            CROARING_WASM_COMBINE_##opname(ax2, bx2));                      \
+        v128_t ax4 = wasm_v128_load((const void *)(words_1 + i + 4));       \
+        v128_t bx4 = wasm_v128_load((const void *)(words_2 + i + 4));       \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(                       \
+            CROARING_WASM_COMBINE_##opname(ax4, bx4));                      \
+        v128_t ax6 = wasm_v128_load((const void *)(words_1 + i + 6));       \
+        v128_t bx6 = wasm_v128_load((const void *)(words_2 + i + 6));       \
+        sum += croaring_wasm_v128_carrying_popcnt_pair(                       \
+            CROARING_WASM_COMBINE_##opname(ax6, bx6));                      \
+    }                                                                      \
+    return sum;                                                             \
+}
+
 #elif defined(CROARING_USENEON)
 
 #define CROARING_BITSET_CONTAINER_FN(opname, opsymbol, avx_intrinsic, neon_intrinsic)  \
@@ -948,6 +1083,17 @@ int bitset_container_to_uint32_array(
 	else
 		return (int) bitset_extract_setbits(bc->words,
                 BITSET_CONTAINER_SIZE_IN_WORDS, out, base);
+#elif defined(CROARING_WASM_SIMD)
+   if (bc->cardinality >= 8192) {
+       return (int)bitset_extract_setbits_wasm_simd(
+           bc->words, BITSET_CONTAINER_SIZE_IN_WORDS, out, bc->cardinality,
+           base);
+   }
+	return (int)bitset_extract_setbits(bc->words,
+                BITSET_CONTAINER_SIZE_IN_WORDS, out, base);
+#elif defined(CROARING_USENEON)
+   return (int)bitset_extract_setbits(bc->words,
+           BITSET_CONTAINER_SIZE_IN_WORDS, out, base);
 #else
 	return (int) bitset_extract_setbits(bc->words,
                 BITSET_CONTAINER_SIZE_IN_WORDS, out, base);
