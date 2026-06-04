@@ -1059,7 +1059,7 @@ SIMD forks that are shared between **WebAssembly** (`-msimd128`) and **ARM Neon*
 bash tools/check_wasm_simd_neon_pairing.sh
 ```
 
-That check is **not** a proof of algorithmic equivalence; it is a line-count / ordering heuristic. End-to-end behavioral parity of the amalgamation on native vs wasm is covered by `bash tools/run_wasm_differential_test.sh`, which you can run locally. The pairing linter runs in the GitHub Actions [emscripten workflow](.github/workflows/emscripten.yml); the differential digest job is wired into that workflow once wasm SIMD code lands (its SIMD-uplift guard needs SIMD present to assert against).
+That check is **not** a proof of algorithmic equivalence; it is a line-count / ordering heuristic. End-to-end behavioral parity of the amalgamation on native vs wasm is covered by `bash tools/run_wasm_differential_test.sh`, which you can run locally. The pairing linter and the wasm differential digest both run in the GitHub Actions [emscripten workflow](.github/workflows/emscripten.yml). On **`emcc -msimd128`** builds (`CROARING_WASM_SIMD`), **`run_container_to_uint32_array`** uses wasm **i32x4** chunking aligned with the AVX2 path; the differential digest asserts parity against native and wasm-scalar.
 
 # Thread safety
 

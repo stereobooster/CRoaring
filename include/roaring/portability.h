@@ -165,6 +165,13 @@ extern "C" {  // portability definitions are in global scope, not a namespace
 #include <arm_neon.h>
 #endif
 
+#if defined(__wasm_simd128__)
+#ifndef CROARING_WASM_SIMD
+#define CROARING_WASM_SIMD 1
+#endif
+#include <wasm_simd128.h>
+#endif /* __wasm_simd128__ */
+
 #if defined(__e2k__)
 // we have an e2k (Elbrus-2000) processor
 #define CROARING_IS_E2K 1
@@ -249,6 +256,14 @@ inline int roaring_leading_zeroes(unsigned long long input_num) {
 #warning "Warning. Unrecognized compiler."
 #define ALIGNED(x)
 #endif
+
+#if defined(__wasm_simd128__)
+/* wasm_i32x4_splat((int32_t)x) corrupts lanes when x exceeds INT32_MAX. */
+static inline v128_t croaring_wasm_v128_broadcast_u32(uint32_t x) {
+    ALIGNED(16) uint32_t lanes[4] = {x, x, x, x};
+    return wasm_v128_load((const void *)&lanes);
+}
+#endif /* defined(__wasm_simd128__) */
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CROARING_WARN_UNUSED __attribute__((warn_unused_result))

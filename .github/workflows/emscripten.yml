@@ -17,3 +17,5 @@ jobs:
         run: cmake --build build
       - name: NEON vs Wasm SIMD preprocessor pairing
         run: bash tools/check_wasm_simd_neon_pairing.sh
+      - name: Wasm differential digest (native vs wasm scalar vs wasm simd128)
+        run: bash tools/ci_wasm_differential_digest.sh

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <roaring/containers/run.h>
 #include <roaring/memory.h>
@@ -1114,6 +1115,68 @@ int run_container_to_uint32_array(void *vout, const run_container_t *cont,
     } else {
         return _scalar_run_container_to_uint32_array(vout, cont, base);
     }
+}
+
+#elif defined(CROARING_WASM_SIMD)
+
+/* Wasm SIMD cardinality uses the scalar sum; matching prior AVX-wasm hybrids
+ * bit-identically was fragile vs native wasm. */
+int run_container_cardinality(const run_container_t *run) {
+    const int32_t n_runs = run->n_runs;
+    const rle16_t *runs = run->runs;
+
+    /* by initializing with n_runs, we omit counting the +1 for each pair. */
+    int sum = n_runs;
+    for (int k = 0; k < n_runs; ++k) {
+        sum += runs[k].length;
+    }
+
+    return sum;
+}
+
+CROARING_ALLOW_UNALIGNED
+/* i32x4 chunked export (always under CROARING_WASM_SIMD); mirrors AVX2.
+ * Wasm differential digest checks parity vs native and wasm scalar. */
+static int _wasm128_run_container_to_uint32_array(void *vout,
+                                                  const run_container_t *cont,
+                                                  uint32_t base) {
+    int outpos = 0;
+    uint32_t *out = (uint32_t *)vout;
+
+    for (int i = 0; i < cont->n_runs; ++i) {
+        uint32_t run_start = base + cont->runs[i].value;
+        uint16_t le = cont->runs[i].length;
+        if (le < 4) {
+            for (int j = 0; j <= le; ++j) {
+                uint32_t val = run_start + (uint32_t)j;
+                memcpy(out + outpos, &val, sizeof(uint32_t));
+                outpos++;
+            }
+        } else {
+            int j = 0;
+            v128_t run_start_v = croaring_wasm_v128_broadcast_u32(run_start);
+            v128_t inc = wasm_i32x4_splat(4);
+            v128_t delta = wasm_i32x4_make(0, 1, 2, 3);
+            for (; j + 4 <= le; j += 4) {
+                v128_t val_v = wasm_i32x4_add(run_start_v, delta);
+                wasm_v128_store((void *)(out + outpos), val_v);
+                delta = wasm_i32x4_add(inc, delta);
+                outpos += 4;
+            }
+            for (; j <= le; ++j) {
+                uint32_t val = run_start + (uint32_t)j;
+                memcpy(out + outpos, &val, sizeof(uint32_t));
+                outpos++;
+            }
+        }
+    }
+    return outpos;
+}
+
+CROARING_ALLOW_UNALIGNED
+int run_container_to_uint32_array(void *vout, const run_container_t *cont,
+                                  uint32_t base) {
+    return _wasm128_run_container_to_uint32_array(vout, cont, base);
 }
 
 #else
