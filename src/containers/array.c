@@ -384,7 +384,18 @@ bool array_container_intersect(const array_container_t *array1,
         return intersect_skewed_uint16_nonempty(array2->array, card_2,
                                                 array1->array, card_1);
     } else {
-        // we do not bother vectorizing
+        /* Balanced-merge nonempty: SIMD path matches cardinality/intersect
+         * kernels (wasm digest parity); historically scalar-only Nonempty left
+         * room—see intersect_vector16_nonempty docstring for perf caveat. */
+#if CROARING_IS_X64
+        if (croaring_hardware_support() & ROARING_SUPPORTS_AVX2) {
+            return intersect_vector16_nonempty(array1->array, (size_t)card_1,
+                                               array2->array, (size_t)card_2);
+        }
+#elif defined(CROARING_WASM_SIMD)
+        return intersect_vector16_nonempty(array1->array, (size_t)card_1,
+                                           array2->array, (size_t)card_2);
+#endif
         return intersect_uint16_nonempty(array1->array, card_1, array2->array,
                                          card_2);
     }
