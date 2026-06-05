@@ -6,25 +6,16 @@
 # pairwise OR/AND/XOR/ANDNOT membership oracles, iterator-vs-export checks, inplace
 # parity, cardinality laws, portable round-trip OR oracle — all exercised on every leg.
 #
-# Exit codes (non-debug mode): 0 success (digests agree), 1 digest mismatch / compare failure,
-#   2 missing toolchain (no emcc or node), 3 missing wasm output next to emitted .js,
-#   4 missing wasm-objdump for SIMD artifact guard, 5 SIMD uplift gate failure,
-#   7 CI forbids SIMD skip env override.
+# Exit codes: 0 success (digests agree), 1 digest mismatch / compare failure,
+#   2 missing toolchain (no emcc or node), 3 missing wasm output next to emitted .js.
 #
-# Requirements: bash, cc (or $CC), emcc (or $EMCC), node (or $NODE), wasm-objdump
-#   (from WABT or $EMSDK/upstream/bin when using Emscripten).
+# Requirements: bash, cc (or $CC), emcc (or $EMCC), node (or $NODE).
 #
-# Optional env (local debugging / broken toolchains only — do not use to green CI;
-# forbidden when GITHUB_ACTIONS is set):
-#   WASM_DIFF_SKIP_SIMD_ARTIFACT_GUARD=1 — skip wasm-objdump bytecode uplift checks below.
-#
-# Mandatory (unless skipped per env):
-#
-# wasm-objdump artifact proof (heuristic on opcodes): linked + roaring-only wasm objects
-#   must show SIMD uplift for -msimd128 vs scalar, so digest legs aren’t bitwise-identical stubs.
-#   Regex patterns and wasm-objdump formatting can change with newer Emscripten/LLVM codegen.
-#   The roaring.c-only comparison reduces false negatives from SIMD-looking glue in linked
-#   scalar builds, but it is still not a formal proof—only intent + regression signal.
+# The -msimd128 leg is now the project's default wasm SIMD path, so the test is
+# the three-way digest comparison itself: native, wasm-scalar, and wasm-simd128
+# must produce identical output. (Earlier revisions also ran wasm-objdump/LLVM-IR
+# SIMD-presence guards to prove the SIMD leg wasn't vacuously scalar during
+# bring-up; those are no longer needed now that the SIMD paths have landed.)
 #
 # Local dev (macOS/Linux): from repo root,
 #   bash tools/run_wasm_differential_test.sh
@@ -33,13 +24,6 @@
 #   bash tools/check_wasm_simd_neon_pairing.sh
 
 set -euo pipefail
-
-if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-  if [[ "${WASM_DIFF_SKIP_SIMD_ARTIFACT_GUARD:-0}" != "0" ]]; then
-    echo "run_wasm_differential_test.sh: skip env WASM_DIFF_SKIP_SIMD_ARTIFACT_GUARD must not be set in CI (GITHUB_ACTIONS)." >&2
-    exit 7
-  fi
-fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CC="${CC:-cc}"
@@ -71,77 +55,6 @@ SIMD_JS="$WORK/wasm_diff_simd.js"
 NATIVE_TXT="$WORK/native.txt"
 SCALAR_TXT="$WORK/wasm_scalar.txt"
 SIMD_TXT="$WORK/wasm_simd.txt"
-
-resolve_wasm_objdump() {
-  if command -v wasm-objdump >/dev/null 2>&1; then
-    command -v wasm-objdump
-    return
-  fi
-  if [[ -n "${EMSDK:-}" && -x "${EMSDK}/upstream/bin/wasm-objdump" ]]; then
-    echo "${EMSDK}/upstream/bin/wasm-objdump"
-    return
-  fi
-  echo ""
-}
-
-WASM_OBJDUMP="$(resolve_wasm_objdump)"
-
-count_simd_ops() {
-  local wasm="$1"
-  if [[ -z "$WASM_OBJDUMP" ]]; then
-    echo "0"
-    return
-  fi
-  local n
-  # Subshell uses set +e so a no-match grep (exit 1) does not abort under
-  # pipefail. The baseline scalar object legitimately has zero SIMD opcodes.
-  n=$(
-    (
-      set +e
-      "$WASM_OBJDUMP" -d "$wasm" 2>/dev/null | grep -oE 'v128\.[a-z0-9._]+|[fi][0-9]+x[0-9]+\.[a-z0-9._]+'
-      :
-    ) | wc -l | tr -d ' '
-  )
-  echo "${n:-0}"
-}
-
-verify_wasm_simd_artifacts() {
-  local scalar_link="$1"
-  local simd_link="$2"
-  local roaring_scalar_o="$3"
-  local roaring_simd_o="$4"
-
-  if [[ "${WASM_DIFF_SKIP_SIMD_ARTIFACT_GUARD:-0}" != "0" ]]; then
-    echo "== SIMD artifact proof: skipped (WASM_DIFF_SKIP_SIMD_ARTIFACT_GUARD) ==" >&2
-    return 0
-  fi
-  if [[ -z "$WASM_OBJDUMP" ]]; then
-    echo "run_wasm_differential_test.sh: wasm-objdump required for SIMD artifact guard (install WABT or use Emscripten upstream/bin)." >&2
-    exit 4
-  fi
-
-  local lk_s lk_d rl_s rl_d
-  lk_s=$(count_simd_ops "$scalar_link")
-  lk_d=$(count_simd_ops "$simd_link")
-  rl_s=$(count_simd_ops "$roaring_scalar_o")
-  rl_d=$(count_simd_ops "$roaring_simd_o")
-
-  echo "SIMD-shaped opcode hits (wasm-objdump heuristic): linked.scalar=$lk_s linked.simd=$lk_d roaring.c-only.scalar=$rl_s roaring.c-only.simd=$rl_d"
-
-  if [[ "$lk_d" -le "$lk_s" ]]; then
-    echo "run_wasm_differential_test.sh: linked -msimd128 module does not expose more SIMD opcodes than scalar ($lk_d vs $lk_s); SIMD test leg may equal scalar codegen." >&2
-    exit 5
-  fi
-  if [[ "$rl_d" -le "$rl_s" ]]; then
-    echo "run_wasm_differential_test.sh: amalgamated roaring.c with -msimd128 shows no SIMD opcode uplift versus plain wasm object ($rl_d vs $rl_s)." >&2
-    exit 5
-  fi
-  if [[ "$rl_s" -ne 0 ]]; then
-    echo "run_wasm_differential_test.sh: plain wasm roaring.c object unexpectedly has SIMD-shaped opcodes (count=$rl_s); expected baseline 0." >&2
-    exit 5
-  fi
-  echo "OK: SIMD artifacts differ from scalar (linked wasm + roaring.c wasm objects)."
-}
 
 echo "== Native ($CC) =="
 "$CC" -std=c11 -O2 -Wall -Wextra -DCROARING_AMALGAMATED=1 -I"$AMALG" \
@@ -183,12 +96,6 @@ if [[ ! -f "$simd_wasm_file" ]]; then
   exit 3
 fi
 "$NODE" "$SIMD_JS" >"$SIMD_TXT"
-
-echo "== Roaring.c wasm objects (isolate library SIMD uplift) =="
-"$EMCC" -std=c11 -O2 -c -DCROARING_AMALGAMATED=1 -I"$AMALG" "$ROARING_C" -o "$WORK/roaring_lib.scalar.o"
-"$EMCC" -std=c11 -O2 -msimd128 -c -DCROARING_AMALGAMATED=1 -I"$AMALG" \
-  "$ROARING_C" -o "$WORK/roaring_lib.simd.o"
-verify_wasm_simd_artifacts "$scalar_wasm_file" "$simd_wasm_file" "$WORK/roaring_lib.scalar.o" "$WORK/roaring_lib.simd.o"
 
 compare_digests() {
   local a="$1"
